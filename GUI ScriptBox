@@ -1,0 +1,217 @@
+#Define GUI XML
+
+[xml]$Script:InputXML = @"
+<Window 
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:Service_Restart_Test"
+        Title="Script Box" Height="380" Width="805">
+    <Grid RenderTransformOrigin="0.5,0.5">
+        <Grid.RenderTransform>
+            <TransformGroup>
+                <ScaleTransform/>
+                <SkewTransform/>
+                <RotateTransform Angle="0.063"/>
+                <TranslateTransform/>
+            </TransformGroup>
+        </Grid.RenderTransform>
+        <TextBox Name="Textbox1" HorizontalAlignment="Left" Height="22" Margin="238,41,0,0" TextWrapping="Wrap" Text="" VerticalAlignment="Top" Width="164"/>
+        <Button Name="Button1" Content="Go" HorizontalAlignment="Left" Margin="238,68,0,0" VerticalAlignment="Top" Width="75" RenderTransformOrigin="-0.267,-4.018"/>
+        <Label Name="Label1" Content="Enter PC Name here:" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="238,15,0,0" Width="119" RenderTransformOrigin="1.163,0.193"/>
+        <Viewbox Grid.ColumnSpan="2" HorizontalAlignment="Right" Height="35" Margin="661,299,10,10" VerticalAlignment="Bottom" Width="121">
+            <Button Name="Button2" Content="Close"/>
+        </Viewbox>
+        <TextBox Name="Textbox2" HorizontalAlignment="Left" Text="Output will go here:" VerticalAlignment="Top" Margin="10,106,0,0" Width="772" Height="188" VerticalScrollBarVisibility="Visible"/>
+        <ComboBox Name="Combo1" HorizontalAlignment="Left" Margin="475,41,0,0" VerticalAlignment="Top" Width="184" IsReadOnly="True" RenderTransformOrigin="0.426,1.808">
+            <Label Name="RemoteRegistry" Content="Restart Remote Registry" BorderBrush="{x:Null}" Background="{x:Null}"/>
+            <Label Name="CMRC" Content="Restart Remote Control" Background="{x:Null}" BorderBrush="{x:Null}"/>
+            <Label Name="Spooler" Content="Restart Print Spooler" Background="{x:Null}" BorderBrush="{x:Null}"/>
+            <Label Name="UpTime" Content="Query Computer Info" Background="{x:Null}" BorderBrush="{x:Null}"/>
+            <Label Name="Registry" Content="Query Autologin Info" Background="{x:Null}" BorderBrush="{x:Null}"/>
+            <Label Name="Restart" Content="Restart PC" Background="{x:Null}" BorderBrush="{x:Null}"/>           
+        </ComboBox>
+        <Label Content="Select Option:" HorizontalAlignment="Left" Margin="475,15,0,0" VerticalAlignment="Top"/>
+        <Viewbox Grid.Column="1" HorizontalAlignment="Left" Height="100" Margin="111.164,76.883,0,0" Grid.Row="2" VerticalAlignment="Top" Width="100"/>
+    </Grid>
+</Window>
+"@
+
+#Load necessary assemblies and attach variable names to all objects in XML
+Add-Type -AssemblyName PresentationCore,PresentationFramework,WindowsBase,system.windows.forms
+$Script:GUI = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $Script:InputXML))
+$Script:InputXML.SelectNodes("//*[@Name]") | %{Set-Variable -Name ($Script:_.Name) -Value $GUI.FindName($_.Name)}
+
+#Attach Event Handlers to objects in XML
+$TextBox2.IsReadOnly = $true
+$Button1.Add_Click({Get-Name; Get-Online})
+$Button1.IsDefault = $true
+$Button2.Add_Click({GUIClose})
+
+#Functions to control opening and closing of GUI
+Function GUI {$Script:GUI.ShowDialog() | Out-Null}
+Function GUIClose {$Script:GUI.Close() | Out-Null}
+
+#Reads the PC Name from what is entered into Text Box 1
+Function Get-Name {$Script:PCName = $Textbox1.Text}
+
+#Returns a quick Hello World! to ensure Function flow is working; used for debugging.
+#Function Hello {$Textbox2.AppendText("`nPC is online.  Continuing..."); $Textbox2.ScrollToEnd()}
+
+#Returns a quick Goodbye World! for debugging.
+Function Goodbye {$Textbox2.AppendText("`n" + $PCName + " does not exist or is not online."); $Textbox2.ScrollToEnd()}
+
+#Tests if the PC or object from Get-Name is online or not.  Returns an error if not online and goes back to asking for name.
+Function Get-Online 
+{If (!$PCName)
+    {$Textbox2.AppendText("`nComputer Name field is blank.  Some functions may not work."); $Textbox2.ScrollToEnd(); ServiceName}
+Elseif (Test-Connection -ComputerName $PCName -Count 1 -Quiet)
+    {$Textbox2.AppendText("`nPinging " + $PCName); $Textbox2.ScrollToEnd(); ServiceName}
+else 
+    {Goodbye; Clear-Variable -Name PCName; $Textbox1.Text = "Enter a valid PC Name"}
+}
+
+#Determines which service to restart based on the drop down menu.  Uses the index of each value rather than the contents.
+Function ServiceName
+{$Script:ChosenOption = $Combo1.SelectedIndex;
+If ($ChosenOption -eq "0")
+    {$Script:ServiceNames = "RemoteRegistry"; ServiceStatus}
+ElseIf ($ChosenOption -eq "1")
+    {$Script:ServiceNames = "CmRcService"; ServiceStatus}
+ElseIf ($ChosenOption -eq "2")
+    {$Script:ServiceNames = "Spooler"; ServiceStatus}
+ElseIf ($ChosenOption -eq "3")
+    {Uptime; DiskSpace; LoggedIn}
+ElseIf ($ChosenOption -eq "4")
+    {RemoteRegistry}
+ElseIf ($ChosenOption -eq "5")
+    {Restart}
+Else
+    {Get-Variable -Name ChosenService; $TextBox2.AppendText("`nError!  Please select a valid option!")}}
+
+
+
+#Checks the status of the requested service.  If running, moves to stop it and then start it.  If stopped, moves to start it.
+Function ServiceStatus 
+{Begin {Foreach ($Script:ServiceName in $ServiceNames) 
+        {try {Get-Service -ComputerName $PCName -Name $ServiceName -ErrorAction Stop | Select-Object Name, Status} 
+        Catch {$Textbox2.AppendText("`nERROR!  The " + $ServiceName + " service does not exist on this PC"); $Textbox2.ScrollToEnd()}
+        }
+        }
+Process {Foreach ($ServiceName in $ServiceNames){$Script:SStatus = Get-Service -ComputerName $PCName -Name $ServiceName}}
+End {if ($SStatus.status -eq "Running")
+        {$Textbox2.AppendText("`n" + $ServiceName + " is currently " + $SStatus.Status); $Textbox2.ScrollToEnd(); StopS}
+    elseif ($SStatus.StartType -eq "Disabled")
+        {$Textbox2.AppendText("`n" + $ServiceName + " is currently " + $SStatus.StartType + ".`nPlease start the service manually."); 
+        $Textbox2.ScrollToEnd()}
+    elseif ($SStatus.status -eq "Stopped") 
+        {$Textbox2.AppendText("`n" + $ServiceName + " is currently " + $SStatus.Status); $Textbox2.ScrollToEnd(); StartS}
+    else
+        {$Textbox2.AppendText("`nERROR!"); $Textbox2.ScrollToEnd()}
+    }
+}
+
+
+
+#Stops the service and then moves to start it.
+Function StopS
+{Begin {Foreach ($ServiceName in $ServiceNames){Get-Service -ComputerName $PCName -Name $ServiceName | Stop-Service}}
+Process {Foreach ($ServiceName in $ServiceNames){$Textbox2.AppendText("`nStopping service...`n"); 
+        $SNEW = Get-Service -ComputerName $PCName -Name $ServiceName | Select-Object Name,Status; 
+        $Textbox2.AppendText($SNEW); $Textbox2.ScrollToEnd()}
+        }
+End {StartS}
+}
+
+
+
+#Starts the service and then prompts the user for further input.
+Function StartS 
+{Begin {Foreach ($ServiceName in $ServiceNames){Get-Service -ComputerName $PCName -Name $ServiceName | Start-Service}}
+Process {Foreach ($ServiceName in $ServiceNames){$Textbox2.AppendText("`nStarting service...`n"); 
+        $SNEW = Get-Service -ComputerName $PCName -Name $ServiceName | Select-Object Name,Status; 
+        $Textbox2.AppendText($SNEW); $Textbox2.ScrollToEnd()}
+        }
+End{Clear-Variable -Name ServiceNames; Clear-Variable -Name ServiceName}
+}
+
+
+
+#Queries how long since the PC was last restarted
+Function Uptime
+{$Boot = Get-WmiObject Win32_OperatingSystem -ComputerName $PCName -Property LastBootUpTime
+$Uptime = (Get-Date) - ($Boot.ConvertToDateTime($Boot.LastBootUpTime))
+$TextBox2.AppendText("`nSystem has been up for " + $Uptime.Days + " Days and " + $Uptime.Hours + " hours.")}
+
+
+
+#Queries free diskspace
+Function DiskSpace
+{# by Josiah Rea
+$DiskSize = Get-WmiObject Win32_LogicalDisk -ComputerName $PCName -Filter "DeviceID='C:'" | select-object Size,Freespace | % {$_.FreeSpace=[math]::Round($_.FreeSpace/1GB);$_.Size=[math]::Round($_.Size/1GB);$_}
+$TotalRAM = (Get-WmiObject -ComputerName $PCName -Class "Win32_PhysicalMemory" | Measure-Object -Property Capacity -Sum).Sum | % {[math]::Round($_/1GB)}
+#Write-Host "Total RAM: $TotalRAM GB"
+$TextBox2.AppendText("`nTotal size of C: drive = " + $DiskSize.Size + " GB`nFreespace in C: drive = " + $DiskSize.Freespace + " GB`nTotal RAM: " + $TotalRAM + " GB"); $TextBox2.ScrollToEnd()
+}
+
+
+
+#Queries currently logged in users
+Function LoggedIn
+{$LoggedInUsers = Get-WmiObject -ComputerName $PCName -Class Win32_ComputerSystem | Select-Object Username
+$LoggedInUsers = $LoggedInUsers -replace "@{Username=","" -replace "}",""
+$TextBox2.AppendText("`nUsers logged into the PC:`n" + $LoggedInUsers); $TextBox2.ScrolltoEnd()}
+
+
+
+#Checks to see if the Remote Registry service is disabled, started, or stopped, and proceeds to checking the AutoLogin portion.
+Function RemoteRegistry
+{$RemoteRegistryStatus = Get-Service -ComputerName $PCName -Name RemoteRegistry | Select-Object Status, StartType
+If ($RemoteRegistryStatus.StartType -eq 'Disabled')
+    {Set-Service -ComputerName $PCName -Name RemoteRegistry -StartupType Manual;
+    Get-Service -ComputerName $PCName -Name RemoteRegistry | Start-Service; 
+    RegQuery}
+ElseIf ($RemoteRegistryStatus.Status -eq 'Stopped')
+    {Get-Service -ComputerName $PCName -Name RemoteRegistry | Start-Service;
+    RegQuery}
+ElseIf ($RemoteRegistryStatus.Status -eq 'Running')
+    {RegQuery}
+Else
+    {$TextBox2.AppendText("`nUnable to start the Remote Registry service on " + $PCName + ".`nPlease attempt to start it manually."); 
+    $TextBox2.ScrollToEnd()}}
+
+
+
+#Queries Registry Auto-login values
+Function RegQuery{
+$UserName  = reg query "\\$PCName\HKLM\software\microsoft\windows nt\currentversion\winlogon" /v DefaultUserName
+$Password  = reg query "\\$PCName\HKLM\software\microsoft\windows nt\currentversion\winlogon" /v DefaultPassword
+$Domain    = reg query "\\$PCName\HKLM\software\microsoft\windows nt\currentversion\winlogon" /v DefaultDomainName
+$ForceAuto = reg query "\\$PCName\HKLM\software\microsoft\windows nt\currentversion\winlogon" /v ForceAutoLogon
+$AutoAdmin = reg query "\\$PCName\HKLM\software\microsoft\windows nt\currentversion\winlogon" /v AutoAdminLogon
+$Shell     = reg query "\\$PCName\HKLM\software\microsoft\windows nt\currentversion\winlogon" /v Shell
+
+$UserName  = $UserName.trimstart("HKEY_LOCAL_MACHINE\software\microsoft\windows nt\currentversion\winlogon") 
+$Password  = $Password.trimstart("HKEY_LOCAL_MACHINE\software\microsoft\windows nt\currentversion\winlogon")
+$Domain    = $Domain.trimstart("HKEY_LOCAL_MACHINE\software\microsoft\windows nt\currentversion\winlogon")
+$ForceAuto = $ForceAuto.trimstart("HKEY_LOCAL_MACHINE\software\microsoft\windows nt\currentversion\winlogon")
+$AutoAdmin = $AutoAdmin.trimstart("HKEY_LOCAL_MACHINE\software\microsoft\windows nt\currentversion\winlogon")
+$Shell     = $Shell.trimstart("HKEY_LOCAL_MACHINE\software\microsoft\windows nt\currentversion\winlogon")
+
+Get-Service -ComputerName $PCName -Name RemoteRegistry | Stop-Service;
+Set-Service -ComputerName $PCName -Name RemoteRegistry -StartupType Disabled;
+
+$TextBox2.AppendText("`n" + $UserName + "`n" + $Password + "`n" + $Domain + "`n" + $ForceAuto + "`n  AutoAdminLogon " + $AutoAdmin + "`n" + $Shell); 
+$TextBox2.ScrollToEnd()}
+
+#Force restarts the remote PC; checks to make sure you are not attempting to restart your local machine
+Function Restart
+{If ($PCName -eq $env:COMPUTERNAME)
+    {$TextBox2.AppendText("`nThat is this PC's name, are you trying to shut down your own computer?")}
+Else
+    {Restart-Computer -ComputerName $PCName -Force}
+}
+
+#This is the main part that runs.  It calls the GUI.
+GUI
