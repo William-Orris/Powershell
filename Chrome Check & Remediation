@@ -1,0 +1,24 @@
+$UserNames = Get-ChildItem -Path "C:\Users"
+
+Foreach ($UserName in $UserNames) {
+    If (Test-Path "C:\Users\$($UserName.Name)\AppData\Local\Google\Chrome\Application"){
+        Write-Host "Installed"
+    }
+    Else {
+        Write-Host "NotInstalled"
+    }
+}
+
+
+$users = Get-ChildItem -Path "C:\Users" | Where-Object {$_.name -notlike '*Default*' -and $_.name -notlike '*Public*'}
+
+foreach ($user in $users){
+    If (Test-Path -Path "$($user.fullname)\AppData\Local\Google\Chrome\Application") {
+        Remove-Item "$($user.fullname)\AppData\Local\Google\Chrome\Application" -Force -Recurse
+        $Date = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        Out-File -FilePath "C:\Windows\CCM\Logs\GoogleChrome-RemoveUserInstalls.txt" -Append -NoClobber -InputObject "$Date Chrome install removed on the profile for $User."
+    } Else {
+        $Date = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        Out-File -FilePath "C:\Windows\CCM\Logs\GoogleChrome-RemoveUserInstalls.txt" -Append -NoClobber -InputObject "$Date No Chrome installed on the profile for $User."
+    }
+}
