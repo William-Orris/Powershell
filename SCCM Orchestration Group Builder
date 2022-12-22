@@ -1,0 +1,286 @@
+#Cluster Stuff
+#Build Orchestration Groups for SQL
+
+$Date = Get-Date -Format "yyyy-MM-dd"
+$Path = "\\SERVERNAME\SCCM\OrchestrationGroups"
+$TranscriptLog = "$Path\Transcripts\$($Date)_Transcript.log"
+Start-Transcript -Path $TranscriptLog
+$Domain = "contoso.com"
+$Outfile = "$Path\$($Date)_ClusterNodes.csv"
+$ScriptOutfile = "$Path\$($Date)_OGScriptStatus.csv"
+$Site = 'ABC:'
+$Log = "$Path\Logs\$($Date)_OGBuilder.Log"
+
+$Clusters = Get-Cluster -Domain $Domain
+$ClustersExport = @()
+$ScriptResults = @()
+$Location = Get-Location
+
+#Define Functions
+#Function Get-LineNumber
+Function Get-LineNumber {
+    [PSCustomObject]@{
+        Line = $MyInvocation.ScriptlineNumber
+    } | Write-Output
+}
+
+#Function Update-LogFile
+#Parameters = LogComment, LogFile, Line
+#This function updates the log file specified in the $Log variable with the date, time, line number, and comment on what is currently happening in the script.
+#Primarily for debugging and tracking.
+Function Update-LogFile {
+    [CmdLetBinding()]
+    Param(
+        [Parameter(mandatory=$true)]
+        [string]
+        $LogComment
+        ,
+        [Parameter(mandatory=$true)]
+        [string]
+        $LogFile
+        ,
+        [Parameter(ValueFromPipeline)]
+        [PSCustomObject]
+        $Line
+    )
+    $Date = Get-Date -Format "yyyy-MM-dd"
+    $Time = Get-Date -Format "HH:mm"
+    Write-Output "$($Date) $($Time)    $Line    $LogComment" | Out-File $LogFile -Append
+}
+
+$Line = (Get-LineNumber).Line
+Update-LogFile -LogComment "Importing Configuration Manager module..." -LogFile $Log -Line $Line
+
+Import-Module ConfigurationManager
+(Get-Module -Name ConfigurationManager).Version
+(Get-Module -Name ConfigurationManager).Path
+
+$Line = (Get-LineNumber).Line
+Update-LogFile -LogComment "Successfully imported SCCM Module.  Checking connection to SCCM Site..." -LogFile $Log -Line $Line
+
+If ($Location.Path -notmatch $Site) {
+    Set-Location $Site
+    $Line = (Get-LineNumber).Line
+    Update-LogFile -LogComment "Connected to SCCM Site $($Site)!" -LogFile $Log -Line $Line
+    Write-Host "Connected to SCCM Site $($Site)!" -ForegroundColor "Green"
+} Else {
+    $Line = (Get-LineNumber).Line
+    Update-LogFile -LogComment "Already connected to SCCM Site $($Site)!" -LogFile $Log -Line $Line
+    Write-Host "Already connected to SCCM Site $($Site)!" -ForegroundColor "Green"
+}
+
+
+$Line = (Get-LineNumber).Line
+Update-LogFile -LogComment "Setting pre-patch script..." -LogFile $Log -Line $Line
+$PrepatchScript = Get-CMOrchestrationGroup -Name "PreSetOG"
+
+$Line = (Get-LineNumber).Line
+Update-LogFile -LogComment "Starting cluster check..." -LogFile $Log -Line $Line
+
+Foreach ($Cluster in $Clusters) {
+    $Line = (Get-LineNumber).Line
+    Update-LogFile -LogComment "Checking $($Cluster.Name) connection..." -LogFile $Log -Line $Line
+    $Cluster.Name
+
+    If (Test-Connection -ComputerName $Cluster.Name -Count 3 -Quiet) {
+        $Line = (Get-LineNumber).Line
+        Update-LogFile -LogComment "Able to connect to $($Cluster.Name)!  Checking for Orchestration Group with same name and gathering cluster nodes..." -LogFile $Log -Line $Line
+        $OrchestrationGroup = Get-CMOrchestrationGroup -Name $Cluster.Name
+        $ClusterNodes = Get-ClusterNode -Cluster $Cluster.Name
+        If (!$OrchestrationGroup) {
+            $Line = (Get-LineNumber).Line
+            Update-LogFile -LogComment "WARNING: $($Cluster.Name) NOT found as an orchestration group.  Proceeding to create OG..." -LogFile $Log -Line $Line
+            Write-Host "$($Cluster.Name) NOT found as an orchestration group." -ForegroundColor "Yellow"
+            Foreach ($ClusterNode in $ClusterNodes) {
+                $OGMemberIDs = @()
+                $Line = (Get-LineNumber).Line
+                Update-LogFile -LogComment "Checking connection to $($ClusterNode) in $($Cluster.Name)..." -LogFile $Log -Line $Line
+                Write-Host "Checking connection to $($ClusterNode) in $($Cluster.Name)..."
+                If (Test-Connection -ComputerName $ClusterNode -Count 1 -Quiet) {
+                    $Line = (Get-LineNumber).Line
+                    Update-LogFile -LogComment "Connection succeeded, adding $($ClusterNode) to list of devices to add to OG." -LogFile $Log -Line $Line
+                    $ResourceID = Get-CMDevice -Name $ClusterNode.Name -Fast
+                    $OGMemberIDs += $OGMembers.ResourceID
+                    $OGMemberIDs += $ResourceID.ResourceID
+                    $ClusterObject = [PSCustomObject]@{
+                        DomainName = $Domain
+                        ClusterName = $Cluster.Name
+                        OrchestrationGroup = $Cluster.Name
+                        HostName = $ClusterNode.Name
+                        Connection = "TRUE"
+                        Note = "Able to connect to $($ClusterNode), adding to new OG $($Cluster.Name)"
+                    }
+                    $ClustersExport += $ClusterObject
+                    $Line = (Get-LineNumber).Line
+                    Update-LogFile -LogComment "Exported results to CSV at $($Outfile)!" -LogFile $Log -Line $Line
+                    Write-Host "Exported to CSV at $($Outfile)!" -ForegroundColor Green
+                } Else {
+                    $Line = (Get-LineNumber).Line
+                    Update-LogFile -LogComment "ERROR: Unable to connect to $($ClusterNode)!  Skipping node..." -LogFile $Log -Line $Line
+                    Write-Host "Unable to connect to $($ClusterNode)" -ForegroundColor Red
+                    $ClusterObject = [PSCustomObject]@{
+                        DomainName = $Domain
+                        ClusterName = $Cluster.Name
+                        OrchestrationGroup = $OrchestrationGroup.Name
+                        HostName = $ClusterNode.Name
+                        Connection = "FALSE"
+                        Note = "Unable to connect to $($ClusterNode)"
+                    }
+                    $ClustersExport += $ClusterObject
+                    $Line = (Get-LineNumber).Line
+                    Update-LogFile -LogComment "Exported results to CSV at $($Outfile)!" -LogFile $Log -Line $Line
+                }
+                $parameters = @{
+                    Name = $Cluster.Name
+                    SiteCode = "SPE"
+                    Description = ""
+                    OrchestrationType = "Number"
+                    OrchestrationValue = 1
+                    OrchestrationTimeOutMin = 720
+                    MaxLockTimeOutMin = 60
+                    PreScript = $PrepatchScript.PreScript
+                    PreScriptTimeoutSec = 3600
+                    PostScript = $null #"Write-Host 'POST-install script'"
+                    PostScriptTimeoutSec = 1
+                    MemberResourceIds = $OGMemberIDs
+                  }
+                  $LogParameters = $parameters | out-string
+                  $Line = (Get-LineNumber).Line
+                  Update-LogFile -LogComment "Setting parameters for OG creation: `n$($LogParameters)" -LogFile $Log -Line $Line
+
+                Try {
+                    Write-Host "Creating new Orchestration Group named $($Cluster.Name)." -ForegroundColor "Yellow"
+                    $Line = (Get-LineNumber).Line
+                    Update-LogFile -LogComment "Creating new Orchestration Group named $($Cluster.Name)." -LogFile $Log -Line $Line
+                    New-CMOrchestrationGroup @parameters #-WhatIf
+                    $OrchestrationGroup = Get-CMOrchestrationGroup -Name $Cluster.Name
+                } Catch {
+                    $Line = (Get-LineNumber).Line
+                    Update-LogFile -LogComment "ERROR: Unable to create new Orchestration Groups." -LogFile $Log -Line $Line
+                    Write-Host "Unable to create new Orchestration Groups." -ForegroundColor "Red"
+                }
+            }
+        } Else {
+            $Line = (Get-LineNumber).Line
+            Update-LogFile -LogComment "$($Cluster.Name) found as Orchestration Group $($OrchestrationGroup.Name)." -LogFile $Log -Line $Line
+            Write-Host "$($Cluster.Name) found as Orchestration Group $($OrchestrationGroup.Name)."
+            $MOGMembers = $OrchestrationGroup.MOGMembers
+            $OGMembers = @()
+            Foreach ($MOGMember in $MOGMembers) {
+                $OGMembers += Get-CMDevice -ResourceID $MOGMember -Fast
+            }
+            $Line = (Get-LineNumber).Line
+            Update-LogFile -LogComment "Enumerating current OG Members: `n$($OGMembers.Name)" -LogFile $Log -Line $Line
+            Foreach ($ClusterNode in $ClusterNodes) {
+                $Line = (Get-LineNumber).Line
+                Update-LogFile -LogComment "Cross-referencing cluster nodes with OG members..." -LogFile $Log -Line $Line
+                If ($OGMembers.Name -notcontains $ClusterNode.Name) {
+                    $Line = (Get-LineNumber).Line
+                    Update-LogFile -LogComment "WARNING: $($ClusterNode.Name) not found in the Orchestration Group!" -LogFile $Log -Line $Line
+                    $OGMemberIDs = @()
+                    $ResourceID = Get-CMDevice -Name $ClusterNode.Name -Fast
+                    $OGMemberIDs += $OGMembers.ResourceID
+                    $OGMemberIDs += $ResourceID.ResourceID
+                    Try {
+                        $Line = (Get-LineNumber).Line
+                        Update-LogFile -LogComment "Setting $($ResourceID.Name) as a member of $($OrchestrationGroup.Name)." -LogFile $Log -Line $Line
+                        Write-Host "Setting $($ResourceID.Name) as a member of $($OrchestrationGroup.Name)." -ForegroundColor "Yellow"
+                        Set-CMOrchestrationGroup -Id $OrchestrationGroup.MOGID -MemberResourceIds $OGMemberIDs #-WhatIf
+                    } Catch {
+                        $Line = (Get-LineNumber).Line
+                        Update-LogFile -LogComment "ERROR: Unable to set $($OrchestrationGroup.Name) with new member $($ClusterNode.Name)." -LogFile $Log -Line $Line
+                        Write-Host "Unable to set $($OrchestrationGroup.Name) with new member $($ClusterNode.Name)." -ForegroundColor "Red"
+                    }
+                    $ClusterObject = [PSCustomObject]@{
+                        DomainName = $Domain
+                        ClusterName = $Cluster.Name
+                        OrchestrationGroup = $OrchestrationGroup.Name
+                        HostName = $ClusterNode.Name
+                        Connection = "TRUE"
+                        Note = "Added $($ClusterNode.Name) to $($OrchestrationGroup.Name)"
+                    }
+                    $ClustersExport += $ClusterObject
+                    $Line = (Get-LineNumber).Line
+                    Update-LogFile -LogComment "Exported results to CSV at $($Outfile)!" -LogFile $Log -Line $Line
+                } Else {
+                    $Line = (Get-LineNumber).Line
+                    Update-LogFile -LogComment "$($ClusterNode.Name) found on Orchestration Group $($OrchestrationGroup.Name)." -LogFile $Log -Line $Line
+                    Write-Host "$($ClusterNode.Name) found on Orchestration Group $($OrchestrationGroup.Name)." -ForegroundColor "Green"
+                    $ClusterObject = [PSCustomObject]@{
+                        DomainName = $Domain
+                        ClusterName = $Cluster.Name
+                        OrchestrationGroup = $OrchestrationGroup.Name
+                        HostName = $ClusterNode.Name
+                        Connection = "TRUE"
+                        Note = "$($ClusterNode.Name) already found on $($OrchestrationGroup.Name)"
+                    }
+                    $ClustersExport += $ClusterObject
+                }
+            }
+        }
+        If (!$OrchestrationGroup.PreScript -and $OrchestrationGroup.Name -like "*CLUSTER*") {
+            $Line = (Get-LineNumber).Line
+            Update-LogFile -LogComment "WARNING: No pre-script found on $($OrchestrationGroup.Name)!" -LogFile $Log -Line $Line
+            Write-Host "No pre-script found on $($OrchestrationGroup.Name)!" -ForegroundColor "Red"
+            Try {
+                $Line = (Get-LineNumber).Line
+                Update-LogFile -LogComment "Setting pre-patch script on $($OrchestrationGroup.Name)." -LogFile $Log -Line $Line
+                Write-Host "Setting pre-patch script on $($OrchestrationGroup.Name)." -ForegroundColor "Yellow"
+                Set-CMOrchestrationGroup -Id $OrchestrationGroup.MOGID -PreScript $PrepatchScript.PreScript #-WhatIf
+            } Catch {
+                $Line = (Get-LineNumber).Line
+                Update-LogFile -LogComment "ERROR: Unable to set pre-patch script on $($ClusterNode.Name)." -LogFile $Log -Line $Line
+                Write-Host "Unable to set pre-patch script on $($ClusterNode.Name)." -ForegroundColor "Red"
+            }
+        }
+        If (!$OrchestrationGroup.PostScript -and $OrchestrationGroup.Name[4] -ne "6" -and $OrchestrationGroup.Name[6] -ne "6") {
+            $Line = (Get-LineNumber).Line
+            Update-LogFile -LogComment "Unable to set post-patch script on $($ClusterNode.Name)." -LogFile $Log -Line $Line
+            Try {
+                $Line = (Get-LineNumber).Line
+                Update-LogFile -LogComment "Setting post-patch script on $($OrchestrationGroup.Name)." -LogFile $Log -Line $Line
+                Write-Host "Setting post-patch script on $($OrchestrationGroup.Name)." -ForegroundColor "Yellow"
+                Set-CMOrchestrationGroup -Id $OrchestrationGroup.MOGID -PostScript $PrepatchScript.PostScript #-WhatIf
+            } Catch {
+                $Line = (Get-LineNumber).Line
+                Update-LogFile -LogComment "ERROR: Unable to set post-patch script on $($ClusterNode.Name)." -LogFile $Log -Line $Line
+                Write-Host "Unable to set post-patch script on $($ClusterNode.Name)." -ForegroundColor "Red"
+            }
+        }
+        If ($OrchestrationGroup.PreScriptApprovalState -eq 0 -OR $OrchestrationGroup.PostScriptApprovalState -eq 0) {
+            $Line = (Get-LineNumber).Line
+            Update-LogFile -LogComment "ERROR: Orchestration Group Scripts for $($OrchestrationGroup.Name) must be approved to run!  Please manually approve these through the SCCM Console!" -LogFile $Log -Line $Line
+            Write-Host "Orchestration Group Scripts for $($OrchestrationGroup.Name) must be approved to run!  Please manually approve these through the SCCM Console!" -ForegroundColor Red
+            $ScriptsNeedingApproval = [PSCustomObject]@{
+                OrchestrationGroup = $OrchestrationGroup.Name
+                PreScriptStatus = $OrchestrationGroup.PreScriptApprovalState
+                PostScriptStatus = $OrchestrationGroup.PostScriptApprovalState
+            }
+            $ScriptResults += $ScriptsNeedingApproval
+        }
+
+
+    } Else {
+        $Line = (Get-LineNumber).Line
+        Update-LogFile -LogComment "ERROR: Unable to connect to $($Cluster.Name)" -LogFile $Log -Line $Line
+        Write-Host "Unable to connect to $($Cluster.Name)" -ForegroundColor Red
+        $ClusterObject = [PSCustomObject]@{
+            DomainName = $Domain
+            ClusterName = $Cluster.Name
+            OrchestrationGroup = $null
+            HostName = $null
+            Connection = "FALSE"
+            Note = "Unable to connect to $($Cluster.Name)"
+        }
+        $ClustersExport += $ClusterObject
+        $Line = (Get-LineNumber).Line
+        Update-LogFile -LogComment "Exported results to CSV at $($Outfile)!" -LogFile $Log -Line $Line
+    }
+}
+
+
+$Line = (Get-LineNumber).Line
+Update-LogFile -LogComment "Building report..." -LogFile $Log -Line $Line
+$ClustersExport | Export-CSV -Path $Outfile -NoTypeInformation -Append
+
+Stop-Transcript
