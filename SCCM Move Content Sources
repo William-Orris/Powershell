@@ -1,0 +1,211 @@
+#SCCM Cleanup
+#Define script outfiles and start the transcript.
+#Can look at adding in the Email function to set up an automated report.
+$Date = Get-Date -Format "yyyy-MM-dd"
+$OutfileApps = "C:\Temp\SCCMCleanup\$($Date)_SCCMApps.csv"
+$OutfilePackages = "C:\Temp\SCCMCleanup\$($Date)_SCCMPackages.csv"
+$OutfileDrivers = "C:\Temp\SCCMCleanup\$($Date)_SCCMDrivers.csv"
+$OutfileUpdates = "C:\Temp\SCCMCleanup\$($Date)_SCCMUpdates.csv"
+$TranscriptLog = "C:\Temp\SCCMCleanup\$($Date)_Transcript.log"
+Start-Transcript -Path $TranscriptLog
+
+If (!(Get-Module -Name ConfigurationManager)) {
+    Import-Module ConfigurationManager
+}
+
+#We must be connected to the "ABC:" drive to run SCCM cmdlets
+If ($Location.Path -notmatch "ABC:") {
+    Set-Location ABC:
+    Write-Host "Connected to SCCM Site ABC!" -ForegroundColor "Green"
+} Else {
+    Write-Host "Already connected to SCCM Site ABC!" -ForegroundColor "Green"
+}
+
+#Grab all task sequences to check references to packages and drivers later.
+#Do not use the -Fast parameter as otherwise the references are not collected and this will do nothing.
+$TaskSequences = Get-CMTaskSequence
+
+# ------------------------------------------------------------------------------
+#Region Applications
+#Grabs all applications
+#Checks for different deployment types and gets the current content location for those
+#Creates the new content location based on the old content location
+#Can update the content location in SCCM.  Currently this is commented out.
+#Creates report based on info gathered with App Name, Deployment Type Name, Content Locations, 
+#Number of Deployments, dependent Task Sequences, and dependent Applications,
+#Date Created, and Last Date Modified
+# ------------------------------------------------------------------------------
+
+#$Applications = Get-CMApplication -Fast | Where-Object {$_.NumberofDeployments -eq "0" -and $_.NumberOfDependentTS -eq "0" -and $_.NumberofDependentDTs -eq "0"} #| Select-Object -Property $_.Name
+$Applications = Get-CMApplication -Fast
+
+Foreach ($App in $Applications) {
+    Clear-Variable ReportApplication -ErrorAction SilentlyContinue
+    $App.LocalizedDisplayName
+    $DeploymentTypes = Get-CMDeploymentType -ApplicationName $App.LocalizedDisplayName
+
+    Foreach ($DT in $DeploymentTypes) {
+        If ($DT.SDMPackageXML -ne "") {
+            [xml]$XML = $DT.SDMPackageXML 
+            $Locations = $XML.AppMgmtDigest.DeploymentType.Installer.Contents.Content
+        }
+    }
+
+    Foreach ($DeploymentType in $DeploymentTypes) {
+        Foreach ($Location in $Locations) {
+            If ($DeploymentType.ContentId -eq $Location.ContentId) {
+                $Old = $Location.Location
+
+                If ($Old -match "contoso.com") {
+                    $New = $Old -Replace "OLDLOCATION.contoso.com\\SOURCE_FILES","NEWLOCATION\SourceFiles"
+                    Try {
+                        #Set-CMScriptDeploymentType -ApplicationName $App.LocalizedDisplayName -DeploymentTypeName $DeploymentType.LocalizedDisplayName -MsiOrScriptInstaller -ContentLocation $New
+                    } Catch {
+                        #Set-CMMsiDeploymentType -ApplicationName $App.LocalizedDisplayName -DeploymentTypeName $DeploymentType.LocalizedDisplayName -MsiOrScriptInstaller -ContentLocation $New
+                        #Get-CMDeploymentType -ApplicationName $App.LocalizedDisplayName -DeploymentTypeId $DeploymentType.CI_ID | Set-CMDeploymentType -MsiOrScriptInstaller -ContentLocation $New #-WhatIf
+                    }
+                    #Get-CMDeploymentType -ApplicationName $App.LocalizedDisplayName -DeploymentTypeId $DeploymentType.CI_ID | Set-CMDeploymentType -MsiOrScriptInstaller -ContentLocation $New #-WhatIf
+                } Else {
+                    $New = $Old -Replace "OLDLOCATION\\SOURCE_FILES","NEWLOCATION\SourceFiles"
+                    Try {
+                        #Set-CMScriptDeploymentType -ApplicationName $App.LocalizedDisplayName -DeploymentTypeName $DeploymentType.LocalizedDisplayName -MsiOrScriptInstaller -ContentLocation $New
+                    } Catch {
+                        #Set-CMMsiDeploymentType -ApplicationName $App.LocalizedDisplayName -DeploymentTypeName $DeploymentType.LocalizedDisplayName -MsiOrScriptInstaller -ContentLocation $New
+                        #Get-CMDeploymentType -ApplicationName $App.LocalizedDisplayName -DeploymentTypeId $DeploymentType.CI_ID | Set-CMDeploymentType -MsiOrScriptInstaller -ContentLocation $New #-WhatIf
+                    }
+                }
+
+                $ReportApplication = [PSCustomObject]@{
+                    Name = $App.LocalizedDisplayName
+                    DeploymentTypeName = $DeploymentType.LocalizedDisplayName
+                    OldContentLocation = $Old
+                    NewContentLocation = $New
+                    NumberOfDeployments = $App.NumberofDeployments
+                    NumberOfDependentTS = $App.NumberOfDependentTS
+                    NumberofDependentDTs = $App.NumberOfDependentDTs
+                    DateCreated = $App.DateCreated
+                    DateLastModified = $App.DateLastModified
+                } 
+
+                $ReportApplication | Export-Csv -Path $OutfileApps -Append -NoTypeInformation
+            }
+        }
+    }
+}
+
+#EndRegion
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+#Region Packages
+#Grabs all packages, checks source locations and can update those, checks deployments and dependent task sequences
+#Creates report with name, content locations, ID, number of deployments and task sequence references, date created, and last date modified
+# ------------------------------------------------------------------------------
+
+$Packages = Get-CMPackage -Fast -PackageType RegularPackage
+Foreach ($Package in $Packages) {
+    Clear-Variable ReportPackage -ErrorAction SilentlyContinue
+    $Package.Name
+    $Old = $Package.PkgSourcePath
+    $TaskSequenceAdvertisements = $TaskSequences | Where-Object {$_.References.Package -eq $Package.PackageID} | Select-Object -ExpandProperty Name
+    $Advertisements = Get-CMPackageDeployment -PackageId $Package.PackageID
+
+    If ($Old -match "contoso.com") {
+        $NewContentLocation = $Old -Replace "OLDLOCATION.contoso.com\\SOURCE_FILES","NEWLOCATION\SourceFiles"
+        #Set-CMPackage -Id $Package.PackageID -Path $NewContentLocation #-WhatIf
+    } Else {
+        $NewContentLocation = $Old -Replace "OLDLOCATION\\SOURCE_FILES","NEWLOCATION\SourceFiles"
+        #Set-CMPackage -Id $Package.PackageID -Path $NewContentLocation #-WhatIf
+    }
+
+    $ReportPackage = [PSCustomObject]@{
+        Name = $Package.Name
+        OldContentLocation = $Old
+        NewContentLocation = $NewContentLocation
+        ID = $Package.PackageID
+        NumberOfDeployments = $Advertisements.Count
+        NumberOfDependentTS = $TaskSequenceAdvertisements.Count
+        DateCreated = $Package.SourceDate
+        DateLastModified = $Package.LastRefreshTime
+    } 
+
+    $ReportPackage | Export-Csv -Path $OutfilePackages -Append -NoTypeInformation
+}
+
+#EndRegion
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+#Region Drivers
+#Grabs all drivers, checks source locations and can update those, checks deployments and dependent task sequences
+#Creates report with name, content locations, ID, number of deployments and task sequence references, date created, and last date modified
+# ------------------------------------------------------------------------------
+
+$Drivers = Get-CMPackage -Fast -PackageType Driver
+Foreach ($Driver in $Drivers) {
+    Clear-Variable ReportDriver -ErrorAction SilentlyContinue
+    $Driver.Name
+    $Old = $Driver.PkgSourcePath
+    $TaskSequenceAdvertisements = $TaskSequences | Where-Object {$_.References.Package -eq $Driver.PackageID} | Select-Object -ExpandProperty Name
+    $Advertisements = Get-CMPackageDeployment -PackageId $Driver.PackageID
+
+    If ($Old -match "contoso.com") {
+        $NewContentLocation = $Old -Replace "OLDLOCATION.contoso.com\\SOURCE_FILES","NEWLOCATION\SourceFiles"
+        #Set-CMDriverPackage -Id $Driver.PackageID -DriverPackageSource $NewContentLocation #-WhatIf
+    } Else {
+        $NewContentLocation = $Old -Replace "OLDLOCATION\\SOURCE_FILES","NEWLOCATION\SourceFiles"
+        #Set-CMDriverPackage -Id $Driver.PackageID -DriverPackageSource $NewContentLocation #-WhatIf
+    }
+
+    $ReportDriver = [PSCustomObject]@{
+        Name = $Driver.Name
+        OldContentLocation = $Old
+        NewContentLocation = $NewContentLocation
+        ID = $Driver.PackageID
+        NumberOfDeployments = $Advertisements.Count
+        NumberOfDependentTS = $TaskSequenceAdvertisements.Count
+        DateCreated = $Driver.SourceDate
+        DateLastModified = $Driver.LastRefreshTime
+    }
+
+    $ReportDriver | Export-Csv -Path $OutfileDrivers -Append -NoTypeInformation
+}
+
+#EndRegion
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+#Region Updates
+#Grabs all drivers, checks source locations and can update those, checks deployments and dependent task sequences
+#Creates report with name, content locations, ID, date created, and last date modified
+# ------------------------------------------------------------------------------
+
+$UpdatePackages = Get-CMSoftwareUpdateDeploymentPackage
+
+Foreach ($Update in $UpdatePackages) {
+    $Update.Name
+    $Old = $Update.PkgSourcePath
+
+    If ($Old -match "OldUpdateLocation") {
+        $New = $Old -Replace "OLDLOCATION\\OldUpdateLocation","NEWLOCATION\SourceFiles"
+        #Set-CMSoftwareUpdateDeploymentPackage -Name $Update.Name -Path $New #-WhatIf
+    } ElseIf ($Old -match "Source_files") {
+        $New = $Old -Replace "OLDLOCATION\\SOURCE_FILES","NEWLOCATION\SourceFiles"
+        #Set-CMSoftwareUpdateDeploymentPackage -Name $Update.Name -Path $New #-WhatIf
+    } Else {
+        $New = "Please update the source manually."
+    }
+
+    $ReportUpdate = [PSCustomObject]@{
+        Name = $Update.Name
+        OldContentLocation = $Old
+        NewContentLocation = $New
+        ID = $Update.PackageID
+        DateCreated = $Package.SourceDate
+        DateLastModified = $Package.LastRefreshTime
+    } 
+
+    $ReportUpdate | Export-Csv -Path $OutfileUpdates -Append -NoTypeInformation
+}
+
+#EndRegion
+# ------------------------------------------------------------------------------
+
+Stop-Transcript
