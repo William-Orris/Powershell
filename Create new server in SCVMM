@@ -1,0 +1,179 @@
+# ------------------------------------------------------------------------------
+# Create Virtual Machine Wizard Script
+# ------------------------------------------------------------------------------
+
+$Names = 
+$Location = 
+$Cluster = 
+#Choices:  Prod or QA
+$SCVMM = "Prod"
+
+# ------------------------------------------------------------------------------
+
+If ($SCVMM -eq "Prod") {
+    $BaseTemplate = "TEMPLATE_NAME_HERE"
+    $VMMServer = "VMM.contoso.com"
+} ElseIf ($SCVMM -eq "QA") {
+    $BaseTemplate = "TEMPLATE_NAME_HERE"
+    $VMMServer = "VMMQA.contoso.com"
+} Else {
+    Write-Host "Please use either Prod or QA for your SCVMM environment." -ForegroundColor Red
+    Pause
+    Exit
+}
+
+Foreach ($Name in $Names) {
+    $Guid = New-Guid
+    $JobGroup = $Guid.Guid
+    $Password = ConvertTo-SecureString 'DefaultPassword' -AsPlainText -Force #Not good practice, but this local password can be changed after the fact.  Recommend using LAPS for this!
+    $LocalAdministratorCredential = New-Object System.Management.Automation.PSCredential ('Administrator', $password)
+    $ClusterNodes = Get-ClusterNode -Cluster $Cluster
+
+    $VMHostCluster = Get-SCVMHostCluster -Name $Cluster
+    $Switch = Get-SCVirtualNetwork -VMHostCluster $VMHostCluster
+    $Switch = $Switch.Name
+
+    New-SCVirtualScsiAdapter -VMMServer $VMMServer `
+        -JobGroup $JobGroup `
+        -AdapterID 7 `
+        -ShareVirtualScsiAdapter $false `
+        -ScsiControllerType DefaultTypeNoType 
+
+    $VMNetwork = Get-SCVMNetwork -VMMServer $VMMServer `
+        -Name $Switch
+
+    New-SCVirtualNetworkAdapter -VMMServer $VMMServer `
+        -JobGroup $JobGroup `
+        -MACAddressType Dynamic `
+        -VirtualNetwork $Switch `
+        -VLanEnabled $false `
+        -Synthetic `
+        -EnableVMNetworkOptimization $false `
+        -EnableMACAddressSpoofing $false `
+        -EnableGuestIPNetworkVirtualizationUpdates $true `
+        -IPv4AddressType Dynamic `
+        -IPv6AddressType Dynamic `
+        -VMNetwork $VMNetwork `
+        -DevicePropertiesAdapterNameMode Disabled 
+
+    $CPUType = Get-SCCPUType -VMMServer $VMMServer #Can add filtering with a Where-Object here
+    $CapabilityProfile = Get-SCCapabilityProfile -VMMServer $VMMServer | Where-Object {$_.Name -eq "Hyper-V"}
+
+    New-SCHardwareProfile -VMMServer $VMMServer `
+        -CPUType $CPUType `
+        -Name "Profile_$($Name)" `
+        -Description "Profile used to create a VM/Template" `
+        -CPUCount 2 `
+        -MemoryMB 8192 `
+        -DynamicMemoryEnabled $false `
+        -MemoryWeight 5000 `
+        -CPUExpectedUtilizationPercent 20 `
+        -DiskIops 0 `
+        -CPUMaximumPercent 100 `
+        -CPUReserve 0 `
+        -NumaIsolationRequired $false `
+        -NetworkUtilizationMbps 0 `
+        -CPURelativeWeight 100 `
+        -HighlyAvailable $true `
+        -DRProtectionRequired $false `
+        -SecureBootEnabled $true `
+        -SecureBootTemplate "MicrosoftWindows" `
+        -CPULimitFunctionality $false `
+        -CPULimitForMigration $false `
+        -CheckpointType Production `
+        -CapabilityProfile $CapabilityProfile `
+        -Generation 2 `
+        -JobGroup $JobGroup 
+
+    $Template = Get-SCVMTemplate -VMMServer $VMMServer | Where-Object {$_.Name -eq $BaseTemplate}
+    $HardwareProfile = Get-SCHardwareProfile -VMMServer $VMMServer | Where-Object {$_.Name -eq "Profile_$($Name)"}
+
+    $OperatingSystem = Get-SCOperatingSystem -VMMServer $VMMServer | Where-Object {$_.Name -eq "Windows Server 2019 Standard"}
+
+    New-SCVMTemplate -Name "Temporary_Template_$($Name)" `
+        -EnableNestedVirtualization $false `
+        -Template $Template `
+        -HardwareProfile $HardwareProfile `
+        -JobGroup $JobGroup `
+        -ComputerName $Name `
+        -TimeZone 35 `
+        -LocalAdministratorCredential $LocalAdministratorCredential  `
+        -Workgroup "WORKGROUP" `
+        -AnswerFile $null `
+        -OperatingSystem $OperatingSystem `
+        -UpdateManagementProfile $null
+
+    $template = Get-SCVMTemplate -All | Where-Object { $_.Name -eq "Temporary_Template_$($Name)" }
+    $virtualMachineConfiguration = New-SCVMConfiguration -VMTemplate $template -Name $Name
+    Write-Output $virtualMachineConfiguration
+    $VMHostGroup = Get-SCVMHostGroup -Name $Datacenter
+    $HostRatings = Get-SCVMHostRating -VMHostGroup $VMHostGroup `
+        -VMTemplate $template `
+        -DiskSpaceGB 100 `
+        -VMName $Name `
+        -CPUPriority 8 `
+        -MemoryPriority 5 `
+        -DiskPriority 3 `
+        -NetworkPriority 1
+
+    $HostRatings = $HostRatings.Name -Replace ".contoso.com"
+    $HostRatings = $HostRatings | Where-Object {$_ -in $ClusterNodes.Name}
+
+    $vmHost = Get-SCVMHost -ComputerName $HostRatings[0]
+
+    Set-SCVMConfiguration -VMConfiguration $virtualMachineConfiguration `
+        -VMHost $vmHost `
+        -VMLocation $StorageDestination `
+        -PinVMLocation $true
+
+    Update-SCVMConfiguration -VMConfiguration $virtualMachineConfiguration
+
+    $AllNICConfigurations = Get-SCVirtualNetworkAdapterConfiguration -VMConfiguration $virtualMachineConfiguration
+
+    $VHDConfiguration = Get-SCVirtualHardDiskConfiguration -VMConfiguration $virtualMachineConfiguration
+    #$VHDConfiguration = $VHDConfiguration[0]
+    Set-SCVirtualHardDiskConfiguration -VHDConfiguration $VHDConfiguration[0] `
+        -PinSourceLocation $false `
+        -DestinationLocation $StorageDestination `
+        -FileName "$($Name)_disk_1" `
+        -StorageQoSPolicy $null `
+        -DeploymentOption "UseNetwork"
+
+    #$VHDConfiguration = Get-SCVirtualHardDiskConfiguration -VMConfiguration $virtualMachineConfiguration
+    #$VHDConfiguration = $VHDConfiguration[1]
+    Set-SCVirtualHardDiskConfiguration -VHDConfiguration $VHDConfiguration[1] `
+        -PinSourceLocation $false `
+        -DestinationLocation $StorageDestination `
+        -FileName "$($Name)_disk_2" `
+        -StorageQoSPolicy $null `
+        -DeploymentOption "UseNetwork"
+
+    #$VHDConfiguration = Get-SCVirtualHardDiskConfiguration -VMConfiguration $virtualMachineConfiguration
+    #$VHDConfiguration = $VHDConfiguration[2]
+    Set-SCVirtualHardDiskConfiguration -VHDConfiguration $VHDConfiguration[2] `
+        -PinSourceLocation $false `
+        -DestinationLocation $StorageDestination `
+        -FileName "$($Name)_disk_3" `
+        -StorageQoSPolicy $null `
+        -DeploymentOption "UseNetwork"
+
+    Update-SCVMConfiguration -VMConfiguration $virtualMachineConfiguration
+    New-SCVirtualMachine -Name $Name `
+        -VMConfiguration $virtualMachineConfiguration `
+        -Description "" `
+        -BlockDynamicOptimization $false `
+        -JobGroup $JobGroup `
+        -ReturnImmediately `
+        -StartAction "NeverAutoTurnOnVM" `
+        -StopAction "SaveVM"
+
+    $template = Get-SCVMTemplate -VMMServer $VMMServer| Where-Object { $_.Name -eq "Temporary_Template_$($Name)" }
+    #Remove-SCVMTemplate -VMTemplate $Template
+
+    $HWProfile = Get-SCHardwareProfile -VMMServer $VMMServer | Where-Object { $_.Name -eq "Profile_$($Name)"}
+    #Remove-SCHardwareProfile -HardwareProfile $HWProfile
+
+    Write-Host "VM creation is currently ongoing.  Please monitor the job in the VMM console.  Once finished, please remove the template and hardware profile below." -ForegroundColor Green
+    $template
+    $HWProfile
+}
