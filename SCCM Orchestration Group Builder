@@ -132,7 +132,7 @@ Foreach ($Cluster in $Clusters) {
                 }
                 $parameters = @{
                     Name = $Cluster.Name
-                    SiteCode = "SPE"
+                    SiteCode = "ABC"
                     Description = ""
                     OrchestrationType = "Number"
                     OrchestrationValue = 1
@@ -231,20 +231,6 @@ Foreach ($Cluster in $Clusters) {
                 $Line = (Get-LineNumber).Line
                 Update-LogFile -LogComment "ERROR: Unable to set pre-patch script on $($ClusterNode.Name)." -LogFile $Log -Line $Line
                 Write-Host "Unable to set pre-patch script on $($ClusterNode.Name)." -ForegroundColor "Red"
-            }
-        }
-        If (!$OrchestrationGroup.PostScript -and $OrchestrationGroup.Name[4] -ne "6" -and $OrchestrationGroup.Name[6] -ne "6") {
-            $Line = (Get-LineNumber).Line
-            Update-LogFile -LogComment "Unable to set post-patch script on $($ClusterNode.Name)." -LogFile $Log -Line $Line
-            Try {
-                $Line = (Get-LineNumber).Line
-                Update-LogFile -LogComment "Setting post-patch script on $($OrchestrationGroup.Name)." -LogFile $Log -Line $Line
-                Write-Host "Setting post-patch script on $($OrchestrationGroup.Name)." -ForegroundColor "Yellow"
-                Set-CMOrchestrationGroup -Id $OrchestrationGroup.MOGID -PostScript $PrepatchScript.PostScript #-WhatIf
-            } Catch {
-                $Line = (Get-LineNumber).Line
-                Update-LogFile -LogComment "ERROR: Unable to set post-patch script on $($ClusterNode.Name)." -LogFile $Log -Line $Line
-                Write-Host "Unable to set post-patch script on $($ClusterNode.Name)." -ForegroundColor "Red"
             }
         }
         If ($OrchestrationGroup.PreScriptApprovalState -eq 0 -OR $OrchestrationGroup.PostScriptApprovalState -eq 0) {
